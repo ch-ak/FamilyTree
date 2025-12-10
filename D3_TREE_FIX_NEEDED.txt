@@ -1,0 +1,208 @@
+╔══════════════════════════════════════════════════════════╗
+║                                                          ║
+║  ⚠️  D3 TREE NOT SHOWING REAL DATA - FIX NEEDED         ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
+
+🐛 PROBLEM IDENTIFIED:
+═══════════════════════════════════════════════════════════
+
+The D3FamilyTreeTabView.swift file is corrupted/missing and needs
+to be recreated to load data from Supabase (real data mode).
+
+ROOT CAUSE:
+The D3 Tree ViewModel was only loading mock data, not checking
+the DataSourceManager to switch between mock and real Supabase data.
+
+═══════════════════════════════════════════════════════════
+  ✅ SOLUTION
+═══════════════════════════════════════════════════════════
+
+The D3TreeViewModel needs to:
+1. Check DataSourceManager.shared.isUsingMockData
+2. Load from MockFamilyRepository if true
+3. Load from Supabase if false (same as FullFamilyTreeTabView)
+4. Listen for notifications to auto-refresh
+
+CODE PATTERN (from FullFamilyTreeTabView):
+```swift
+let isUsingMock = dataSourceManager.isUsingMockData
+
+if isUsingMock {
+    // Load from MockFamilyRepository
+    let mockRepo = MockFamilyRepository()
+    let mockPeople = try await mockRepo.fetchAllPeople()
+    // ... convert to PersonRecordDisplay
+} else {
+    // Load from Supabase
+    let people: [PersonRecordDisplay] = try await SupabaseManager.shared.client
+        .from("person")
+        .select("id,full_name,birth_year")
+        .order("birth_year", ascending: true)
+        .execute()
+        .value
+    
+    let relationships: [RelationshipRecord] = try await SupabaseManager.shared.client
+        .from("relationship")
+        .select("id,person_id,related_person_id,type")
+        .execute()
+        .value
+}
+```
+
+═══════════════════════════════════════════════════════════
+  🔧 QUICK FIX
+═══════════════════════════════════════════════════════════
+
+If D3FamilyTreeTabView.swift exists but is corrupted:
+
+OPTION 1: Use Xcode Local History
+──────────────────────────────────────
+1. Right-click D3FamilyTreeTabView.swift
+2. Show in Finder → Versions
+3. Or Editor → Show Last Change
+
+OPTION 2: Copy from FullFamilyTreeTabView pattern
+──────────────────────────────────────
+The loadFamilyData() method in D3TreeViewModel should follow
+the exact same pattern as loadCompleteTree() in FullFamilyTreeTabView:
+
+1. Check dataSourceManager.isUsingMockData
+2. If mock → load from MockFamilyRepository
+3. If real → load from Supabase using SupabaseManager.shared.client
+4. Convert data to PersonRecordDisplay and RelationshipRecord
+
+═══════════════════════════════════════════════════════════
+  📋 WHAT NEEDS TO BE IN D3TreeViewModel
+═══════════════════════════════════════════════════════════
+
+```swift
+@MainActor
+class D3TreeViewModel: ObservableObject {
+    @Published var people: [PersonRecordDisplay] = []
+    @Published var relationships: [RelationshipRecord] = []
+    @Published var layoutType: LayoutType = .vertical
+    
+    private let dataSourceManager = DataSourceManager.shared
+    
+    func loadFamilyData() async {
+        let isUsingMock = dataSourceManager.isUsingMockData
+        
+        do {
+            if isUsingMock {
+                // MOCK DATA
+                let mockRepo = MockFamilyRepository()
+                let mockPeople = try await mockRepo.fetchAllPeople()
+                let mockRelationships = try await mockRepo.fetchAllRelationships()
+                
+                people = mockPeople.map { person in
+                    PersonRecordDisplay(
+                        id: person.id,
+                        full_name: person.fullName,
+                        birth_year: person.birthYear
+                    )
+                }
+                
+                relationships = mockRelationships.map { rel in
+                    RelationshipRecord(
+                        id: rel.id,
+                        person_id: rel.personId,
+                        related_person_id: rel.relatedPersonId,
+                        type: rel.type.rawValue
+                    )
+                }
+            } else {
+                // REAL SUPABASE DATA
+                let peopleData: [PersonRecordDisplay] = 
+                    try await SupabaseManager.shared.client
+                        .from("person")
+                        .select("id,full_name,birth_year")
+                        .order("birth_year", ascending: true)
+                        .execute()
+                        .value
+                
+                let relationshipsData: [RelationshipRecord] = 
+                    try await SupabaseManager.shared.client
+                        .from("relationship")
+                        .select("id,person_id,related_person_id,type")
+                        .execute()
+                        .value
+                
+                people = peopleData
+                relationships = relationshipsData
+            }
+        } catch {
+            print("❌ Error loading D3 tree data: \\(error)")
+        }
+    }
+}
+```
+
+═══════════════════════════════════════════════════════════
+  🔔 ADD NOTIFICATION LISTENERS
+═══════════════════════════════════════════════════════════
+
+In D3FamilyTreeTabView body, add:
+
+```swift
+.task {
+    await viewModel.loadFamilyData()
+}
+.onReceive(NotificationCenter.default.publisher(
+    for: NSNotification.Name("PersonAdded")
+)) { _ in
+    Task { await viewModel.loadFamilyData() }
+}
+.onReceive(NotificationCenter.default.publisher(
+    for: .dataSourceChanged
+)) { _ in
+    Task { await viewModel.loadFamilyData() }
+}
+```
+
+This ensures D3 Tree reloads when:
+- View appears
+- New person added via wizard
+- Data source toggle (Mock ↔ Real)
+
+═══════════════════════════════════════════════════════════
+  ✅ VERIFICATION
+═══════════════════════════════════════════════════════════
+
+After fixing, test:
+
+1. Turn OFF mock data in Settings
+2. Go to D3 Tree tab
+3. Should see your real Supabase data! ✓
+
+4. Add person in Update tab
+5. D3 Tree should auto-refresh ✓
+
+6. Toggle mock data ON
+7. D3 Tree should show mock data ✓
+
+═══════════════════════════════════════════════════════════
+  📱 CURRENT STATUS
+═══════════════════════════════════════════════════════════
+
+✅ FullFamilyTreeTabView: Working with real data
+❌ D3FamilyTreeTabView: File corrupted/needs recreation
+
+✅ CleanPersonFormViewModel: Working perfectly
+✅ All relationship fixes: Applied
+✅ Bidirectional relationships: Working
+✅ Smart spouse detection: Working
+
+ONLY D3 Tree needs fixing!
+
+═══════════════════════════════════════════════════════════
+
+💡 RECOMMENDATION:
+
+Use Xcode to manually restore D3FamilyTreeTabView.swift from
+local history, then apply the loadFamilyData() fix shown above.
+
+The key is making it match FullFamilyTreeTabView's data loading
+pattern exactly.
+
+═══════════════════════════════════════════════════════════

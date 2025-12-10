@@ -1,0 +1,128 @@
+import SwiftUI
+
+struct ChatWizardView: View {
+    @ObservedObject var viewModel: PersonFormViewModel
+
+    var body: some View {
+        VStack(spacing: 16) {
+            if viewModel.currentStep != .done {
+                inputFields
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(viewModel.messages) { message in
+                            messageBubble(for: message)
+                                .id(message.id)
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom, 80)
+                }
+                .onChange(of: viewModel.messages.count) { _ in
+                    scrollToBottom(proxy)
+                }
+                .onAppear {
+                    scrollToBottom(proxy)
+                }
+            }
+        }
+        .overlay(statusOverlay, alignment: .top)
+        .safeAreaInset(edge: .bottom) {
+            Group {
+                if viewModel.currentStep == .done {
+                    completionSummary
+                } else {
+                    inputBar
+                }
+            }
+            .background(.thinMaterial)
+        }
+    }
+
+    private var inputFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Full name", text: $viewModel.fullName)
+                .textFieldStyle(.roundedBorder)
+                .disableAutocorrection(true)
+                .textInputAutocapitalization(.words)
+
+            TextField("Birth year", text: $viewModel.birthYear)
+                .textFieldStyle(.roundedBorder)
+                .keyboardType(.numberPad)
+        }
+        .padding(.horizontal)
+    }
+
+    private var inputBar: some View {
+        HStack(spacing: 12) {
+            TextField("Type your answer…", text: $viewModel.fullName)
+                .textFieldStyle(.roundedBorder)
+            TextField("Birth year", text: $viewModel.birthYear)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 110)
+                .keyboardType(.numberPad)
+
+            Button("Send", action: viewModel.submit)
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isSubmitting)
+        }
+        .padding()
+    }
+
+    private var completionSummary: some View {
+        VStack(spacing: 12) {
+            Label("You're all set!", systemImage: "checkmark.circle.fill")
+                .font(.headline)
+            Text("Switch to the Family Tree tab to view the link you just created.")
+                .font(.callout)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+    }
+
+    private var statusOverlay: some View {
+        Group {
+            if let status = viewModel.statusMessage {
+                Text(status)
+                    .font(.footnote)
+                    .padding(8)
+                    .background(Color(.systemGray6))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .padding()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func messageBubble(for message: ChatMessage) -> some View {
+        HStack(alignment: .top) {
+            if message.role == .user { Spacer(minLength: 48) }
+
+            Text(message.text)
+                .padding(12)
+                .background(message.role == .user ? Color.accentColor : Color(.systemGray5))
+                .foregroundStyle(message.role == .user ? .white : .primary)
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+                .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+
+            if message.role == .system { Spacer(minLength: 48) }
+        }
+        .transition(.move(edge: message.role == .user ? .trailing : .leading).combined(with: .opacity))
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        guard let last = viewModel.messages.last else { return }
+        DispatchQueue.main.async {
+            withAnimation {
+                proxy.scrollTo(last.id, anchor: .bottom)
+            }
+        }
+    }
+}
+
+#Preview {
+    ChatWizardView(viewModel: PersonFormViewModel())
+}

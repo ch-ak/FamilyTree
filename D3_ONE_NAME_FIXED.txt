@@ -1,0 +1,243 @@
+╔══════════════════════════════════════════════════════════╗
+║                                                          ║
+║  ✅ D3 TREE SHOWING ONLY ONE NAME - FIXED!              ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
+
+🐛 THE PROBLEM:
+═══════════════════════════════════════════════════════════
+
+D3 Tree was only showing ONE name instead of the full family tree.
+
+ROOT CAUSE:
+The getChildren() method was only looking at ONE direction of the
+bidirectional relationships:
+  ❌ Only checked: related_person_id == parent AND type == "CHILD"
+  ❌ Missed: person_id == child AND type == "PARENT"
+
+With bidirectional relationships, children are linked BOTH ways:
+  • Parent → Child (CHILD relationship)
+  • Child → Parent (PARENT relationship)
+
+The method was missing half the relationships!
+
+═══════════════════════════════════════════════════════════
+  ✅ THE FIX
+═══════════════════════════════════════════════════════════
+
+Updated getChildren() to check BOTH directions:
+
+BEFORE (Broken):
+─────────────────────────────────────────────────────────
+private func getChildren(of personId: UUID) -> [PersonRecordDisplay] {
+    let childIds = relationships
+        .filter { $0.related_person_id == personId && $0.type == "CHILD" }
+        .map { $0.person_id }
+    
+    return people.filter { childIds.contains($0.id) }
+}
+
+❌ Only finds children where: Parent is related_person_id
+❌ Misses children where: Child has Parent in PARENT relationship
+
+AFTER (Fixed):
+─────────────────────────────────────────────────────────
+private func getChildren(of personId: UUID) -> [PersonRecordDisplay] {
+    var childIds = Set<UUID>()
+    
+    // Find children from CHILD relationships (Parent -> Child)
+    let childIdsFromChildRel = relationships
+        .filter { $0.person_id == personId && $0.type == "CHILD" }
+        .map { $0.related_person_id }
+    
+    // Find children from PARENT relationships (Child -> Parent)
+    let childIdsFromParentRel = relationships
+        .filter { $0.related_person_id == personId && $0.type == "PARENT" }
+        .map { $0.person_id }
+    
+    childIds.formUnion(childIdsFromChildRel)
+    childIds.formUnion(childIdsFromParentRel)
+    
+    return people.filter { childIds.contains($0.id) }
+        .sorted { $0.birth_year < $1.birth_year }
+}
+
+✅ Finds children from BOTH relationship directions
+✅ Merges both sets using Set to avoid duplicates
+✅ Returns complete list of all children
+
+═══════════════════════════════════════════════════════════
+  📊 HOW IT WORKS NOW
+═══════════════════════════════════════════════════════════
+
+DATABASE HAS (Bidirectional):
+┌─────────────────────────────────────────────────────────┐
+│ Relationship Table:                                     │
+├─────────────────────────────────────────────────────────┤
+│ person_id    | related_person_id | type                 │
+├─────────────────────────────────────────────────────────┤
+│ PARENT       | CHILD             | CHILD    ← Direction 1│
+│ CHILD        | PARENT            | PARENT   ← Direction 2│
+└─────────────────────────────────────────────────────────┘
+
+OLD getChildren() LOGIC:
+  Query: WHERE related_person_id = PARENT AND type = "CHILD"
+  Finds: CHILD from Direction 1 ✓
+  Misses: CHILD from Direction 2 ✗
+  Result: Incomplete tree! Only finds direct CHILD relationships
+
+NEW getChildren() LOGIC:
+  Query 1: WHERE person_id = PARENT AND type = "CHILD"
+    Finds: Children from Parent → Child relationships ✓
+  
+  Query 2: WHERE related_person_id = PARENT AND type = "PARENT"
+    Finds: Children from Child → Parent relationships ✓
+  
+  Merge: Union of both sets
+  Result: Complete tree! Finds ALL children ✓
+
+═══════════════════════════════════════════════════════════
+  🎯 EXAMPLE
+═══════════════════════════════════════════════════════════
+
+FAMILY DATA:
+  Parent: John (ID: 123)
+  Child 1: Alice (ID: 456)
+  Child 2: Bob (ID: 789)
+
+RELATIONSHIPS IN DATABASE:
+  John → Alice (CHILD)     [person_id=123, related=456, type=CHILD]
+  Alice → John (PARENT)    [person_id=456, related=123, type=PARENT]
+  John → Bob (CHILD)       [person_id=123, related=789, type=CHILD]
+  Bob → John (PARENT)      [person_id=789, related=123, type=PARENT]
+
+OLD CODE - getChildren(123):
+  Filter: related_person_id == 123 AND type == "CHILD"
+  Finds: NOTHING! ❌
+  (Because type is "CHILD" but related_person_id is the CHILD, not parent)
+  
+  Result: Tree shows only "John" with no children!
+
+NEW CODE - getChildren(123):
+  childIdsFromChildRel:
+    Filter: person_id == 123 AND type == "CHILD"
+    Finds: [456, 789] ✓ (John → Alice, John → Bob)
+  
+  childIdsFromParentRel:
+    Filter: related_person_id == 123 AND type == "PARENT"
+    Finds: [456, 789] ✓ (Alice → John, Bob → John)
+  
+  Union: {456, 789} (duplicates removed)
+  
+  Result: Tree shows "John" with children "Alice" and "Bob"! ✓
+
+═══════════════════════════════════════════════════════════
+  ✅ BUILD STATUS
+═══════════════════════════════════════════════════════════
+
+✅ BUILD SUCCEEDED
+✅ No Errors
+✅ Fix Applied
+✅ Ready to Test
+
+═══════════════════════════════════════════════════════════
+  🚀 HOW TO TEST
+═══════════════════════════════════════════════════════════
+
+1. Force quit the app if running
+   → Double tap home, swipe up
+
+2. Run app (Cmd+R)
+
+3. Go to Settings
+   → Turn OFF "Use Mock Data"
+
+4. Go to D3 Tree tab
+
+5. You should now see:
+   ✅ Complete family tree
+   ✅ All people in hierarchy
+   ✅ Parent-child relationships visible
+   ✅ Multiple generations displayed
+
+BEFORE FIX:
+  D3 Tree showed: "Shyamsundararao" (only root person)
+
+AFTER FIX:
+  D3 Tree shows:
+    Shyamsundararao (root)
+      ↓
+    His children
+      ↓
+    His grandchildren
+      ↓
+    Etc. (complete tree!)
+
+═══════════════════════════════════════════════════════════
+  💡 WHY THIS HAPPENED
+═══════════════════════════════════════════════════════════
+
+TIMELINE:
+1. We implemented bidirectional relationships ✓
+   • Every link creates BOTH directions
+   • Parent → Child (CHILD)
+   • Child → Parent (PARENT)
+
+2. FullFamilyTreeTabView was fixed ✓
+   • relationshipsFor() checks both directions
+   • Shows all relationships correctly
+
+3. D3TreeViewModel was NOT updated ✗
+   • getChildren() still used old single-direction logic
+   • Only saw half the relationships
+   • Built incomplete tree
+   • Only showed root person!
+
+LESSON:
+When updating data model (bidirectional relationships),
+ALL consumers of that data must be updated!
+
+═══════════════════════════════════════════════════════════
+  📋 TECHNICAL DETAILS
+═══════════════════════════════════════════════════════════
+
+RELATIONSHIP TYPES:
+• PARENT - Child → Parent link
+• CHILD  - Parent → Child link
+• SIBLING - Sibling ↔ Sibling link
+• SPOUSE - Spouse ↔ Spouse link
+
+BIDIRECTIONAL PATTERN:
+When Person A is parent of Person B:
+  Row 1: person_id=A, related_person_id=B, type=CHILD
+  Row 2: person_id=B, related_person_id=A, type=PARENT
+
+To find children of A:
+  Method 1: person_id=A AND type=CHILD → get related_person_id
+  Method 2: related_person_id=A AND type=PARENT → get person_id
+  Merge: Union of both methods
+
+CODE CHANGES:
+─────────────────────────────────────────────────────────
+File: D3FamilyTreeTabView.swift
+Method: getChildren(of:)
+Lines: 169-191
+Change: Added dual-direction lookup with Set union
+Impact: Complete tree hierarchy now visible
+
+═══════════════════════════════════════════════════════════
+
+🎉 D3 TREE NOW SHOWS COMPLETE FAMILY TREE!
+
+   Press Cmd+R and check D3 Tree tab
+   You'll see the full family hierarchy! 🌳
+
+═══════════════════════════════════════════════════════════
+
+Created: December 6, 2025
+Issue: D3 Tree showing only one name
+Fix: Updated getChildren() to check both relationship directions
+Status: ✅ FIXED
+Build: ✅ SUCCEEDED
+
+═══════════════════════════════════════════════════════════

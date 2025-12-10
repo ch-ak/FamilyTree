@@ -1,0 +1,26 @@
+The issue is that when adding siblings like Lavanya, Karunya, and Saranya:
+- Lavanya is linked to Karunya ✓
+- Lavanya is linked to Saranya ✓
+- But Karunya is NOT linked to Saranya ✗
+
+This is because handleEnterSiblings only links each new sibling to ME (selfPersonId),
+but doesn't link them to previously added siblings.
+
+The fix: After line 326 (linking to parents), add this code before "notifyDataUpdated()":
+
+        // Link new sibling to ALL previously added siblings
+        for existingSiblingId in siblingIds {
+            try await useCase.linkSibling(personId: sibling.id, siblingId: existingSiblingId)
+            print("✅ Linked \(sibling.fullName) as sibling to existing sibling")
+        }
+        
+        // Add this sibling to the list for future siblings
+        siblingIds.append(sibling.id)
+
+Also need to:
+1. Add "private var siblingIds: [UUID] = []" to the properties (line 28)
+2. Add "siblingIds.removeAll()" to resetState() method
+
+This will ensure:
+- Karunya added → Linked to Lavanya ✓
+- Saranya added → Linked to Lavanya AND Karunya ✓✓

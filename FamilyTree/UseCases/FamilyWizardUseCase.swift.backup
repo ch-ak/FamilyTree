@@ -1,0 +1,526 @@
+import SwiftUI
+import WebKit
+import Combine
+import Supabase
+// MARK: - D3 Family Tree Tab View
+struct D3FamilyTreeTabView: View {
+    @StateObject private var viewModel = D3TreeViewModel()
+    @State private var isLoading = true
+    @State private var showShareSheet = false
+    @State private var pdfURL: URL?
+    @State private var isGeneratingPDF = false
+    @State private var webView: WKWebView?
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                D3TreeWebView(viewModel: viewModel, isLoading: $isLoading, webView: $webView)
+                    .edgesIgnoringSafeArea(.bottom)
+                if isLoading {
+                    ProgressView("Loading Family Tree...")
+                        .padding()
+                        .background(.regularMaterial)
+                        .cornerRadius(10)
+                }
+                if isGeneratingPDF {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                        Text("Generating PDF...")
+                            .font(.headline)
+                    }
+                    .padding(30)
+                    .background(.regularMaterial)
+                    .cornerRadius(15)
+                }
+            }
+            .navigationTitle("D3 Family Tree")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Menu {
+                        Button(action: { viewModel.layoutType = .vertical }) {
+                            Label("Vertical Tree", systemImage: "arrow.down.to.line")
+                        }
+                        Button(action: { viewModel.layoutType = .horizontal }) {
+                            Label("Horizontal Tree", systemImage: "arrow.right.to.line")
+                        }
+                        Button(action: { viewModel.layoutType = .radial }) {
+                            Label("Radial Tree", systemImage: "circle.circle")
+                        }
+                    } label: {
+                        Image(systemName: "square.grid.3x3")
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        Task { await generatePDF() }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .disabled(isGeneratingPDF || isLoading || viewModel.people.isEmpty)
+                }
+            }
+        }
+        .task {
+            await viewModel.loadFamilyData()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("PersonAdded"))) { _ in
+            print("🔔 D3 Tree: PersonAdded notification received - reloading")
+            Task { await viewModel.loadFamilyData() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dataSourceChanged)) { _ in
+            print("🔔 D3 Tree: Data source changed - reloading")
+            Task { await viewModel.loadFamilyData() }
+        }
+        .sheet(isPresented: $showShareSheet) {
+            if let pdfURL = pdfURL {
+                ShareSheet(items: [pdfURL])
+            }
+        }
+    }
+// MARK: - PDF Generation
+    private func generatePDF() async {
+        await MainActor.run { isGeneratingPDF = true }
+        defer {
+            Task { @MainActor in
+                isGeneratingPDF = false
+            }
+        }
+        guard let webView = self.webView else {
+            print("❌ WebView not available")
+            return
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        print("📸 Capturing SVG from WebView...")
+        let js = """
+        (function() {
+            try {
+                const svg = document.querySelector('svg');
+                if (!svg) {
+                    console.log('No SVG found');
+                    return null;
+                }
+                
+                // Get SVG dimensions
+                const bbox = svg.getBBox();
+                const width = bbox.width + bbox.x + 100;
+                const height = bbox.height + bbox.y + 100;
+                
+                // Clone SVG and set explicit dimensions
+                const clonedSvg = svg.cloneNode(true);
+                clonedSvg.setAttribute('width', width);
+                clonedSvg.setAttribute('height', height);
+                clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+                
+                // Serialize SVG to string
+                const serializer = new XMLSerializer();
+                const svgString = serializer.serializeToString(clonedSvg);
+                
+                // Convert to base64 (this is synchronous)
+                const base64 = btoa(unescape(encodeURIComponent(svgString)));
+                
+                // Return as data URL
+                return 'data:image/svg+xml;base64,' + base64;
+            } catch(e) {
+                console.error('SVG capture error:', e);
+                return null;
+            }
+        })();
+        """
+        let dataURL: String? = await withCheckedContinuation { continuation in
+            webView.evaluateJavaScript(js) { result, error in
+                if let error = error {
+                    print("❌ JS error: \(error)")
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: result as? String)
+            }
+        }
+guard let dataURL = dataURL,
+              let base64 = dataURL.components(separatedBy: ",").last,
+              let svgData = Data(base64Encoded: base64),
+              let svgString = String(data: svgData, encoding: .utf8) else {
+            print("❌ Failed to decode SVG data")
+            return
+        }
+        
+        print("✅ SVG captured, rendering to image...")
+        
+        // Render SVG to image using WebKit
+        guard let image = await renderSVGToImage(svgString: svgString, webView: webView) else {
+            print("❌ Failed to render SVG to image")
+            return
+        }
+        print("✅ Image created: \(image.size)")
+        let pdfData = createPDFWithImage(image)
+        guard let data = pdfData else {
+            print("❌ Failed to generate PDF")
+            return
+        }
+        let fileName = "FamilyTree_\(Date().formatted(.iso8601)).pdf"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+        do {
+            try data.write(to: tempURL)
+            await MainActor.run {
+                pdfURL = tempURL
+                showShareSheet = true
+            }
+            print("✅ PDF saved: \(tempURL)")
+        } catch {
+            print("❌ Error: \(error)")
+        }
+    }
+    private func createPDFWithImage(_ image: UIImage) -> Data? {
+        let format = UIGraphicsPDFRendererFormat()
+        format.documentInfo = [
+            kCGPDFContextCreator: "Family Tree App",
+            kCGPDFContextTitle: "Family Tree"
+        ] as [String: Any]
+        let pageWidth: CGFloat = 842
+        let pageHeight: CGFloat = 595
+        let pageRect = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
+        let renderer = UIGraphicsPDFRenderer(bounds: pageRect, format: format)
+        return renderer.pdfData { context in
+            context.beginPage()
+            let titleFont = UIFont.boldSystemFont(ofSize: 24)
+            let bodyFont = UIFont.systemFont(ofSize: 12)
+            let title = "Family Tree"
+            let titleAttr: [NSAttributedString.Key: Any] = [.font: titleFont, .foregroundColor: UIColor.label]
+            title.draw(at: CGPoint(x: 40, y: 30), withAttributes: titleAttr)
+            let stats = "\(viewModel.people.count) people • \(viewModel.relationships.count) relationships • \(viewModel.layoutType.rawValue.capitalized)"
+            let statsAttr: [NSAttributedString.Key: Any] = [.font: bodyFont, .foregroundColor: UIColor.secondaryLabel]
+            stats.draw(at: CGPoint(x: 40, y: 60), withAttributes: statsAttr)
+            let date = "Generated: \(Date().formatted(date: .long, time: .shortened))"
+            date.draw(at: CGPoint(x: pageWidth - 250, y: 30), withAttributes: statsAttr)
+            let imageTop: CGFloat = 90
+            let margin: CGFloat = 40
+            let availW = pageWidth - (margin * 2)
+            let availH = pageHeight - imageTop - margin
+            let imgAspect = image.size.width / image.size.height
+            let availAspect = availW / availH
+            let imageRect: CGRect
+            if imgAspect > availAspect {
+                let h = availW / imgAspect
+                imageRect = CGRect(x: margin, y: imageTop, width: availW, height: h)
+            } else {
+                let w = availH * imgAspect
+                imageRect = CGRect(x: margin, y: imageTop, width: w, height: availH)
+            }
+            image.draw(in: imageRect)
+            let footer = "Family Tree App"
+            let footerAttr: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 10), .foregroundColor: UIColor.tertiaryLabel]
+            let footerSize = footer.size(withAttributes: footerAttr)
+            footer.draw(at: CGPoint(x: (pageWidth - footerSize.width) / 2, y: pageHeight - 30), withAttributes: footerAttr)
+        }
+    }
+    
+    private func renderSVGToImage(svgString: String, webView: WKWebView) async -> UIImage? {
+        // Create a temporary WebView for rendering (to avoid interfering with the main tree)
+        let tempWebView = WKWebView(frame: CGRect(x: 0, y: 0, width: 2000, height: 2000))
+        
+        // Create a simple HTML page with the SVG
+        let html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                * { margin: 0; padding: 0; }
+                body { background: white; }
+            </style>
+        </head>
+        <body>
+            \(svgString)
+        </body>
+        </html>
+        """
+        
+        // Load the HTML in the temporary WebView
+        tempWebView.loadHTMLString(html, baseURL: nil)
+        
+        // Wait for it to load
+        try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+        
+        // Take a snapshot
+        let config = WKSnapshotConfiguration()
+        config.snapshotWidth = NSNumber(value: 2000) // High resolution
+        
+        return await withCheckedContinuation { continuation in
+            tempWebView.takeSnapshot(with: config) { image, error in
+                if let error = error {
+                    print("❌ Snapshot error: \(error)")
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: image)
+            }
+        }
+    }
+
+}
+// MARK: - View Model
+@MainActor
+class D3TreeViewModel: ObservableObject {
+    @Published var people: [PersonRecordDisplay] = []
+    @Published var relationships: [RelationshipRecord] = []
+    @Published var layoutType: LayoutType = .vertical
+    private let dataSourceManager = DataSourceManager.shared
+    enum LayoutType: String {
+        case vertical = "vertical"
+        case horizontal = "horizontal"
+        case radial = "radial"
+    }
+    func loadFamilyData() async {
+        print("🔄 D3 Tree: Starting loadFamilyData - isUsingMock: \(dataSourceManager.isUsingMockData)")
+        do {
+            let isUsingMock = dataSourceManager.isUsingMockData
+            if isUsingMock {
+                print("🎭 D3 Tree: Loading mock data...")
+                let mockRepo = MockFamilyRepository()
+                let mockPeople = try await mockRepo.fetchAllPeople()
+                let mockRelationships = try await mockRepo.fetchAllRelationships()
+                print("✅ D3 Tree: Mock data loaded: \(mockPeople.count) people, \(mockRelationships.count) relationships")
+                people = mockPeople.map { person in
+                    PersonRecordDisplay(
+                        id: person.id,
+                        full_name: person.fullName,
+                        birth_year: person.birthYear
+                    )
+                }
+                relationships = mockRelationships.map { rel in
+                    RelationshipRecord(
+                        id: rel.id,
+                        person_id: rel.personId,
+                        related_person_id: rel.relatedPersonId,
+                        type: rel.type.rawValue
+                    )
+                }
+            } else {
+                print("💾 D3 Tree: Loading from Supabase...")
+                let peopleData: [PersonRecordDisplay] = try await SupabaseManager.shared.client
+                    .from("person")
+                    .select("id,full_name,birth_year")
+                    .order("birth_year", ascending: true)
+                    .execute()
+                    .value
+                let relationshipsData: [RelationshipRecord] = try await SupabaseManager.shared.client
+                    .from("relationship")
+                    .select("id,person_id,related_person_id,type")
+                    .execute()
+                    .value
+                print("✅ D3 Tree: Supabase data loaded: \(peopleData.count) people, \(relationshipsData.count) relationships")
+                people = peopleData
+                relationships = relationshipsData
+            }
+            print("✅ D3 Tree: Data loaded successfully")
+        } catch {
+            print("❌ D3 Tree: Error loading family data: \(error)")
+        }
+    }
+    var treeDataJSON: String {
+        return buildHierarchicalJSON()
+    }
+    private func buildHierarchicalJSON() -> String {
+        guard let root = findRoot() else {
+            print("⚠️ D3 Tree: No root person found")
+            return "{\"name\":\"No Data\",\"children\":[]}"
+        }
+        let rootNode = buildNode(for: root)
+        if let jsonData = try? JSONEncoder().encode(rootNode),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            return jsonString
+        }
+        return "{\"name\":\"Error\",\"children\":[]}"
+    }
+    private func findRoot() -> PersonRecordDisplay? {
+        let peopleWithParents = Set(relationships.filter { $0.type == "PARENT" }.map { $0.person_id })
+        let peopleWithoutParents = people.filter { !peopleWithParents.contains($0.id) }
+        return peopleWithoutParents.min(by: { $0.birth_year < $1.birth_year })
+    }
+    private func buildNode(for person: PersonRecordDisplay) -> TreeNode {
+        let children = getChildren(of: person.id)
+        let childNodes = children.map { buildNode(for: $0) }
+        return TreeNode(
+            name: person.full_name,
+            birthYear: person.birth_year,
+            id: person.id.uuidString,
+            children: childNodes.isEmpty ? nil : childNodes
+        )
+    }
+    private func getChildren(of personId: UUID) -> [PersonRecordDisplay] {
+        var childIds = Set<UUID>()
+        let childIdsFromChildRel = relationships
+            .filter { $0.person_id == personId && $0.type == "CHILD" }
+            .map { $0.related_person_id }
+        let childIdsFromParentRel = relationships
+            .filter { $0.related_person_id == personId && $0.type == "PARENT" }
+            .map { $0.person_id }
+        childIds.formUnion(childIdsFromChildRel)
+        childIds.formUnion(childIdsFromParentRel)
+        return people.filter { childIds.contains($0.id) }
+            .sorted { $0.birth_year < $1.birth_year }
+    }
+}
+// MARK: - Data Models
+
+struct TreeNodeData {
+    let name: String
+    let birthYear: Int
+    let children: [TreeNodeData]
+}
+
+struct TreeNode: Codable {
+    let name: String
+    let birthYear: Int
+    let id: String
+    let children: [TreeNode]?
+}
+// MARK: - WebView
+struct D3TreeWebView: UIViewRepresentable {
+    @ObservedObject var viewModel: D3TreeViewModel
+    @Binding var isLoading: Bool
+    @Binding var webView: WKWebView?
+    func makeUIView(context: Context) -> WKWebView {
+        let webView = WKWebView()
+        webView.navigationDelegate = context.coordinator
+        webView.scrollView.isScrollEnabled = true
+        webView.scrollView.bounces = true
+        webView.backgroundColor = .systemBackground
+
+        DispatchQueue.main.async {
+            self.webView = webView
+        }
+        if let htmlString = generateHTML() {
+            webView.loadHTMLString(htmlString, baseURL: nil)
+        }
+        return webView
+    }
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        let jsonData = viewModel.treeDataJSON
+        let layoutType = viewModel.layoutType.rawValue
+        let javascript = "updateTree(\(jsonData), '\(layoutType)');"
+        webView.evaluateJavaScript(javascript) { _, error in
+            if let error = error {
+                print("❌ JavaScript error: \(error)")
+            }
+        }
+    }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isLoading: $isLoading)
+    }
+    class Coordinator: NSObject, WKNavigationDelegate {
+        @Binding var isLoading: Bool
+        init(isLoading: Binding<Bool>) {
+            _isLoading = isLoading
+        }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            isLoading = false
+        }
+    }
+    private func generateHTML() -> String? {
+        let html = """
+<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f7; overflow: hidden; }
+#tree-container { width: 100vw; height: 100vh; overflow: auto; }
+svg { display: block; }
+.node circle { fill: #fff; stroke: #007AFF; stroke-width: 3px; cursor: pointer; transition: all 0.3s; }
+.node circle:hover { fill: #007AFF; stroke: #0051D5; stroke-width: 4px; }
+.node text { font-size: 14px; font-weight: 600; fill: #1d1d1f; pointer-events: none; text-shadow: 0 0 3px white, 0 0 3px white, 0 0 3px white; }
+.node .birth-year { font-size: 11px; fill: #86868b; text-shadow: 0 0 3px white, 0 0 3px white, 0 0 3px white; }
+.link { fill: none; stroke: #d2d2d7; stroke-width: 2px; }
+.controls { position: fixed; bottom: 30px; right: 20px; display: flex; flex-direction: column; gap: 12px; z-index: 1000; }
+.control-btn { width: 56px; height: 56px; border-radius: 28px; background: white; border: 2px solid #007AFF; box-shadow: 0 4px 16px rgba(0,122,255,0.3); cursor: pointer; font-size: 28px; font-weight: bold; color: #007AFF; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
+.control-btn:active { transform: scale(0.9); background: #007AFF; color: white; }
+.zoom-level { background: white; border: 2px solid #007AFF; border-radius: 20px; padding: 8px 16px; font-size: 14px; font-weight: 600; color: #007AFF; text-align: center; box-shadow: 0 4px 16px rgba(0,122,255,0.3); min-width: 56px; }
+</style></head><body>
+<div id="tree-container"></div>
+<div class="controls">
+<button class="control-btn" onclick="zoomIn()">+</button>
+<div class="zoom-level" id="zoomLevel">100%</div>
+<button class="control-btn" onclick="zoomOut()">−</button>
+<button class="control-btn" onclick="resetZoom()">⟲</button>
+</div>
+<script>
+let currentData = null;
+let currentLayout = 'vertical';
+let svg, g, tree, root, zoomBehavior;
+let currentZoomLevel = 1.0;
+const width = window.innerWidth;
+const height = window.innerHeight;
+function initSVG() {
+    d3.select('#tree-container').selectAll('*').remove();
+    svg = d3.select('#tree-container').append('svg').attr('width', width * 4).attr('height', height * 4);
+    zoomBehavior = d3.zoom().scaleExtent([0.1, 4]).on('zoom', (event) => {
+        g.attr('transform', event.transform);
+        currentZoomLevel = event.transform.k;
+        updateZoomDisplay();
+    });
+    svg.call(zoomBehavior);
+    g = svg.append('g').attr('transform', 'translate(' + (width * 2) + ',' + (height * 0.5) + ')');
+    updateZoomDisplay();
+}
+function updateTree(data, layoutType) {
+    currentData = data;
+    currentLayout = layoutType;
+    initSVG();
+    if (layoutType === 'vertical') { drawVerticalTree(data); }
+    else if (layoutType === 'horizontal') { drawHorizontalTree(data); }
+    else if (layoutType === 'radial') { drawRadialTree(data); }
+}
+function drawVerticalTree(data) {
+    const treeLayout = d3.tree().size([width * 3, height * 3]).separation((a, b) => (a.parent === b.parent ? 2 : 2.5) / a.depth);
+    root = d3.hierarchy(data);
+    treeLayout(root);
+    g.selectAll('.link').data(root.links()).join('path').attr('class', 'link').attr('d', d3.linkVertical().x(d => d.x - width * 1.5).y(d => d.y));
+    const nodes = g.selectAll('.node').data(root.descendants()).join('g').attr('class', 'node').attr('transform', d => 'translate(' + (d.x - width * 1.5) + ',' + d.y + ')');
+    nodes.append('circle').attr('r', 8);
+    nodes.append('text').attr('dy', -15).attr('text-anchor', 'middle').text(d => d.data.name);
+    nodes.append('text').attr('class', 'birth-year').attr('dy', 25).attr('text-anchor', 'middle').text(d => d.data.birthYear ? '(' + d.data.birthYear + ')' : '');
+}
+function drawHorizontalTree(data) {
+    const treeLayout = d3.tree().size([height * 3, width * 3]).separation((a, b) => (a.parent === b.parent ? 1.5 : 2) / a.depth);
+    root = d3.hierarchy(data);
+    treeLayout(root);
+    g.selectAll('.link').data(root.links()).join('path').attr('class', 'link').attr('d', d3.linkHorizontal().x(d => d.y).y(d => d.x - height * 1.5));
+    const nodes = g.selectAll('.node').data(root.descendants()).join('g').attr('class', 'node').attr('transform', d => 'translate(' + d.y + ',' + (d.x - height * 1.5) + ')');
+    nodes.append('circle').attr('r', 8);
+    nodes.append('text').attr('dx', 15).attr('dy', -5).style('font-size', '13px').text(d => d.data.name);
+    nodes.append('text').attr('class', 'birth-year').attr('dx', 15).attr('dy', 8).text(d => d.data.birthYear ? '(' + d.data.birthYear + ')' : '');
+}
+function drawRadialTree(data) {
+    const radius = Math.min(width, height) * 0.8;
+    const treeLayout = d3.tree().size([2 * Math.PI, radius]).separation((a, b) => (a.parent === b.parent ? 2 : 2.5) / a.depth);
+    root = d3.hierarchy(data);
+    treeLayout(root);
+    g.selectAll('.link').data(root.links()).join('path').attr('class', 'link').attr('d', d3.linkRadial().angle(d => d.x).radius(d => d.y));
+    const nodes = g.selectAll('.node').data(root.descendants()).join('g').attr('class', 'node').attr('transform', d => 'rotate(' + (d.x * 180 / Math.PI - 90) + ') translate(' + d.y + ',0)');
+    nodes.append('circle').attr('r', 7);
+    nodes.append('text').attr('dy', '0.31em').attr('x', d => d.x < Math.PI === !d.children ? 10 : -10).attr('text-anchor', d => d.x < Math.PI === !d.children ? 'start' : 'end').attr('transform', d => d.x >= Math.PI ? 'rotate(180)' : null).style('font-size', '12px').text(d => d.data.name + ' (' + d.data.birthYear + ')');
+}
+function zoomIn() { svg.transition().duration(300).call(zoomBehavior.scaleBy, 1.3); }
+function zoomOut() { svg.transition().duration(300).call(zoomBehavior.scaleBy, 0.77); }
+function resetZoom() { svg.transition().duration(500).call(zoomBehavior.transform, d3.zoomIdentity.translate(width * 2, height * 0.5)); }
+function updateZoomDisplay() { document.getElementById('zoomLevel').textContent = Math.round(currentZoomLevel * 100) + '%'; }
+updateTree({name: "Loading...", children: []}, 'vertical');
+</script>
+</body></html>
+"""
+        return html
+    }
+}
+// MARK: - Share Sheet
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        return controller
+    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {
+        // No update needed
+    }
+}

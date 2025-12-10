@@ -1,0 +1,268 @@
+import Foundation
+import Combine
+import Supabase
+
+struct ChatMessage: Identifiable {
+    enum Role {
+        case system
+        case user
+    }
+
+    let id = UUID()
+    let role: Role
+    let text: String
+}
+
+@MainActor
+final class PersonFormViewModel: ObservableObject {
+    enum WizardStep {
+        case enterSelf
+        case enterFather
+        case enterSpouse
+        case enterSiblings
+        case enterChildren
+        case done
+    }
+
+    @Published var fullName = ""
+    @Published var birthYear = ""
+    @Published var statusMessage: String?
+    @Published var isSubmitting = false
+    @Published var currentStep: WizardStep = .enterSelf
+    @Published var selfPersonId: UUID?
+    @Published var fatherPersonId: UUID?
+    @Published var messages: [ChatMessage] = []
+    @Published var selfDisplayName: String?
+    @Published var fatherDisplayName: String?
+    @Published var spouseDisplayName: String?
+
+    init() {
+        appendSystemMessage("Hi! Let's start with your details, then capture your father, spouse, siblings, and kids. What is your full name and year of birth?")
+    }
+
+    func submit() {
+        Task { await handleSubmit() }
+    }
+
+    func appendSystemMessage(_ text: String) {
+        messages.append(ChatMessage(role: .system, text: text))
+    }
+
+    func appendUserMessage(_ text: String) {
+        messages.append(ChatMessage(role: .user, text: text))
+    }
+
+    private func handleSubmit() async {
+        guard currentStep != .done else {
+            statusMessage = "Wizard already completed."
+            return
+        }
+
+        statusMessage = nil
+        let trimmedName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let providedBirthYear = birthYear.trimmingCharacters(in: .whitespacesAndNewlines)
+        let birthYearValue = Int(providedBirthYear) ?? 0
+
+        if isOptionalStep(currentStep) && trimmedName.isEmpty && providedBirthYear.isEmpty {
+            advancePastOptionalStep()
+            return
+        }
+
+        guard validateInputs() else { return }
+        isSubmitting = true
+        defer { isSubmitting = false }
+
+        do {
+            switch currentStep {
+            case .enterSelf:
+                appendUserMessage("My name is \(trimmedName) and I was born in \(providedBirthYear).")
+                let personId = try await insertPerson(fullName: trimmedName, birthYear: birthYearValue)
+                selfPersonId = personId
+                selfDisplayName = trimmedName
+                currentStep = .enterFather
+                appendSystemMessage("Great! Now tell me your father's full name and year of birth.")
+                clearInputs()
+
+            case .enterFather:
+                appendUserMessage("My father's name is \(trimmedName) and he was born in \(providedBirthYear).")
+                let fatherId: UUID
+                if let existing = try await findExistingPerson(fullName: trimmedName, birthYear: birthYearValue) {
+                    fatherId = existing.id
+                } else {
+                    fatherId = try await insertPerson(fullName: trimmedName, birthYear: birthYearValue)
+                }
+                fatherPersonId = fatherId
+                fatherDisplayName = trimmedName
+
+                guard let childId = selfPersonId else { throw WizardError.missingSelfPerson }
+                try await linkParent(childId: childId, parentId: fatherId)
+                currentStep = .enterSpouse
+                appendSystemMessage("Perfect! Now please enter your spouse's full name and birth year, or leave both fields blank and press Send to skip.")
+                clearInputs()
+
+            case .enterSpouse:
+                guard let meId = selfPersonId else { throw WizardError.missingSelfPerson }
+                appendUserMessage("My spouse's name is \(trimmedName) and they were born in \(providedBirthYear).")
+                let spouseId: UUID
+                if let existing = try await findExistingPerson(fullName: trimmedName, birthYear: birthYearValue) {
+                    spouseId = existing.id
+                } else {
+                    spouseId = try await insertPerson(fullName: trimmedName, birthYear: birthYearValue)
+                }
+                spouseDisplayName = trimmedName
+                try await linkSpouse(personId: meId, spouseId: spouseId)
+                currentStep = .enterSiblings
+                appendSystemMessage("Spouse saved! Do you have any siblings? Enter a sibling's full name and birth year, or leave both blank and press Send to skip.")
+                clearInputs()
+
+            case .enterSiblings:
+                guard let meId = selfPersonId else { throw WizardError.missingSelfPerson }
+                appendUserMessage("My sibling's name is \(trimmedName) and they were born in \(providedBirthYear).")
+                let siblingId = try await insertPerson(fullName: trimmedName, birthYear: birthYearValue)
+                try await linkSibling(personId: meId, siblingId: siblingId)
+                appendSystemMessage("Sibling saved. Add another, or leave the fields blank and press Send to continue to your children.")
+                clearInputs()
+
+            case .enterChildren:
+                guard let parentId = selfPersonId else { throw WizardError.missingSelfPerson }
+                appendUserMessage("My child's name is \(trimmedName) and they were born in \(providedBirthYear).")
+                let childId = try await insertPerson(fullName: trimmedName, birthYear: birthYearValue)
+                try await linkChild(parentId: parentId, childId: childId)
+                appendSystemMessage("Child saved. Add another, or leave the fields blank and press Send to finish.")
+                clearInputs()
+
+            case .done:
+                break
+            }
+        } catch {
+            statusMessage = "Failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func insertPerson(fullName: String, birthYear: Int) async throws -> UUID {
+        let person: PersonRecord = try await SupabaseManager.shared.client
+            .from("person")
+            .insert(PersonInsert(full_name: fullName, birth_year: birthYear), returning: .representation)
+            .select("id")
+            .single()
+            .execute()
+            .value
+        return person.id
+    }
+
+    private func findExistingPerson(fullName: String, birthYear: Int) async throws -> PersonRecord? {
+        let response: [PersonRecord] = try await SupabaseManager.shared.client
+            .from("person")
+            .select("id")
+            .eq("full_name", value: fullName)
+            .eq("birth_year", value: birthYear)
+            .limit(1)
+            .execute()
+            .value
+        return response.first
+    }
+
+    private func linkParent(childId: UUID, parentId: UUID) async throws {
+        _ = try await SupabaseManager.shared.client
+            .from("relationship")
+            .insert(RelationshipInsert(person_id: childId, related_person_id: parentId, type: "PARENT"))
+            .execute()
+    }
+
+    private func linkSpouse(personId: UUID, spouseId: UUID) async throws {
+        _ = try await SupabaseManager.shared.client
+            .from("relationship")
+            .insert([
+                RelationshipInsert(person_id: personId, related_person_id: spouseId, type: "SPOUSE"),
+                RelationshipInsert(person_id: spouseId, related_person_id: personId, type: "SPOUSE")
+            ])
+            .execute()
+    }
+
+    private func linkSibling(personId: UUID, siblingId: UUID) async throws {
+        _ = try await SupabaseManager.shared.client
+            .from("relationship")
+            .insert(RelationshipInsert(person_id: personId, related_person_id: siblingId, type: "SIBLING"))
+            .execute()
+    }
+
+    private func linkChild(parentId: UUID, childId: UUID) async throws {
+        _ = try await SupabaseManager.shared.client
+            .from("relationship")
+            .insert(RelationshipInsert(person_id: parentId, related_person_id: childId, type: "CHILD"))
+            .execute()
+    }
+
+    enum WizardError: Error {
+        case missingSelfPerson
+    }
+
+    private func clearInputs() {
+        fullName = ""
+        birthYear = ""
+    }
+
+    private func isOptionalStep(_ step: WizardStep) -> Bool {
+        switch step {
+        case .enterSpouse, .enterSiblings, .enterChildren:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func advancePastOptionalStep() {
+        switch currentStep {
+        case .enterSpouse:
+            currentStep = .enterSiblings
+            appendSystemMessage("No problem! Do you have any siblings? Enter a sibling's full name and birth year, or leave both blank and press Send to skip.")
+        case .enterSiblings:
+            currentStep = .enterChildren
+            appendSystemMessage("Now let's capture your children. Enter a child's name and birth year, or leave both blank and press Send to finish.")
+        case .enterChildren:
+            currentStep = .done
+            appendSystemMessage("You're all set! Switch to the Family Tree tab to review the links you created.")
+        default:
+            break
+        }
+        clearInputs()
+    }
+
+    private func validateInputs() -> Bool {
+        if isOptionalStep(currentStep) {
+            let trimmedName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let providedBirthYear = birthYear.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedName.isEmpty && providedBirthYear.isEmpty {
+                return true
+            }
+        }
+
+        let trimmedName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            statusMessage = "Full name is required"
+            return false
+        }
+
+        guard let year = Int(birthYear), (1000...2100).contains(year) else {
+            statusMessage = "Enter a valid year"
+            return false
+        }
+
+        return true
+    }
+}
+
+private struct PersonInsert: Codable {
+    let full_name: String
+    let birth_year: Int
+}
+
+private struct PersonRecord: Decodable {
+    let id: UUID
+}
+
+private struct RelationshipInsert: Codable {
+    let person_id: UUID
+    let related_person_id: UUID
+    let type: String
+}

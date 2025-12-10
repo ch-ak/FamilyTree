@@ -1,0 +1,50 @@
+╔════════════════════════════════════════════════════════════════════════╗
+║                  🎉 BOTH DEFECTS FIXED - READY TO TEST 🎉               ║
+╠════════════════════════════════════════════════════════════════════════╣
+║                                                                          ║
+║  BUILD STATUS: ✅ BUILD SUCCEEDED                                       ║
+║                                                                          ║
+║  DEFECT 1 - DUPLICATE PARENTS IN WHO TAB: ✅ FIXED                     ║
+║  --------------------------------------------------------                ║
+║  What was fixed:                                                         ║
+║    • Duplicate relationship prevention in createRelationship()          ║
+║    • Deduplication in fetchRelatedPeople() using Set                    ║
+║                                                                          ║
+║  TEST IT NOW:                                                            ║
+║    1. Go to WHO tab                                                      ║
+║    2. Search: Karunya, 1951                                              ║
+║    3. Verify: Parents show ONCE only (no duplicates)                     ║
+║                                                                          ║
+║  ────────────────────────────────────────────────────────────────────   ║
+║                                                                          ║
+║  DEFECT 2 - NO PERSON RECOGNITION IN WIZARD: ✅ FIXED                  ║
+║  --------------------------------------------------------                ║
+║  What was fixed:                                                         ║
+║    • Added findPerson() to check for existing people                    ║
+║    • Added fetchPersonRelationships() to show context                   ║
+║    • Enhanced handleEnterMother/Father with confirmation flow           ║
+║                                                                          ║
+║  TEST IT NOW:                                                            ║
+║    1. Go to Chat Wizard tab                                              ║
+║    2. Enter: Lavanya, 1948 (or any existing person)                      ║
+║    3. When asked for mother, enter: Syamamsundara Rao, 1916             ║
+║    4. Verify: Shows "I found 'Syamamsundara Rao'... with 4 child(ren)" ║
+║    5. Type: yes                                                          ║
+║    6. Verify: Links correctly and proceeds to father                     ║
+║                                                                          ║
+║  ────────────────────────────────────────────────────────────────────   ║
+║                                                                          ║
+║  FILES MODIFIED:                                                         ║
+║    ✓ MockFamilyRepository.swift                                          ║
+║    ✓ FamilyWizardUseCase.swift                                          ║
+║    ✓ CleanPersonFormViewModel.swift                                     ║
+║                                                                          ║
+║  WHAT YOU SHOULD SEE:                                                    ║
+║    • WHO tab: No duplicate parents for Karunya                           ║
+║    • Wizard: Recognition message when entering existing person names     ║
+║    • Wizard: "I found 'Name' with X children, Y spouses..."             ║
+║    • Wizard: Confirmation prompt before linking                          ║
+║                                                                          ║
+╠════════════════════════════════════════════════════════════════════════╣
+║  📖 Full details: BOTH_DEFECTS_FIXED_FINAL.md                           ║
+╚════════════════════════════════════════════════════════════════════════╝

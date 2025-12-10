@@ -1,0 +1,8 @@
+# Xcode user data
+xcuserdata/
+
+# Derived data / build products
+DerivedData/
+
+# Secrets that should not be committed
+FamilyTree/Secrets.plist

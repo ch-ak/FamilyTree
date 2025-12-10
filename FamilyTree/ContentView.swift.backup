@@ -1,0 +1,28 @@
+import SwiftUI
+
+struct ContentView: View {
+    @StateObject private var wizardViewModel = PersonFormViewModel()
+
+    var body: some View {
+        TabView {
+            ChatWizardView(viewModel: wizardViewModel)
+                .tabItem {
+                    Label("Update", systemImage: "message.and.waveform")
+                }
+
+            FamilyTreeTabView(wizardViewModel: wizardViewModel)
+                .tabItem {
+                    Label("My Tree", systemImage: "person.2.fill")
+                }
+            
+            FullFamilyTreeTabView()
+                .tabItem {
+                    Label("Full Tree", systemImage: "tree.fill")
+                }
+        }
+    }
+}
+
+#Preview {
+    ContentView()
+}

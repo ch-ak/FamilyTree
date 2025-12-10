@@ -9,9 +9,15 @@ import SwiftUI
 
 @main
 struct FamilyTreeApp: App {
+    @State private var showSplash = true
+    
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            if showSplash {
+                SplashScreenView(isActive: $showSplash)
+            } else {
+                ContentView()
+            }
         }
     }
 }

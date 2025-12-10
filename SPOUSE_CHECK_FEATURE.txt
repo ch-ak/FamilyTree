@@ -1,0 +1,180 @@
+╔══════════════════════════════════════════════════════════╗
+║                                                          ║
+║  ⚠️ FILE CORRUPTED - MANUAL FIX NEEDED                  ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
+
+CRITICAL: CleanPersonFormViewModel.swift was corrupted during edit
+
+═══════════════════════════════════════════════════════════
+  🎯 WHAT YOU WANTED TO FIX
+═══════════════════════════════════════════════════════════
+
+SCENARIO:
+1. You add YOUR family (yourself, mother, father)
+2. Mother and father get linked as spouses ✓
+3. Later, you restart wizard to add FATHER'S family
+4. Wizard asks: "Are you married?"
+5. But father is ALREADY married to mother! ❌
+
+DESIRED BEHAVIOR:
+If the person already has a spouse in database, skip the
+spouse question and go directly to siblings.
+
+═══════════════════════════════════════════════════════════
+  🔧 THE FIX (To Apply Manually)
+═══════════════════════════════════════════════════════════
+
+You need to restore CleanPersonFormViewModel.swift and add:
+
+STEP 1: Add helper function to check for existing spouse
+─────────────────────────────────────────────────────────
+
+Add this BEFORE the notifyDataUpdated() function:
+
+```swift
+private func checkForExistingSpouse() async throws -> Bool {
+    guard let personId = selfPersonId else {
+        return false
+    }
+    
+    // Get repository
+    let repository = DataSourceManager.shared.getCurrentRepository()
+    
+    // For mock data
+    if let mockRepo = repository as? MockFamilyRepository {
+        let relationships = try await mockRepo.fetchAllRelationships()
+        return relationships.contains { rel in
+            rel.personId == personId && rel.type == .spouse
+        }
+    }
+    
+    // For Supabase (you may need to add this method to repository)
+    // For now, just return false for Supabase
+    return false
+}
+```
+
+STEP 2: Update handleEnterFather to check for spouse
+─────────────────────────────────────────────────────────
+
+FIND this section in handleEnterFather:
+```swift
+notifyDataUpdated()
+
+currentStep = .enterSpouse
+appendSystemMessage("Great! Are you married? Enter your spouse's full name and birth year, or leave both blank to skip.")
+clearInputs()
+```
+
+REPLACE with:
+```swift
+notifyDataUpdated()
+
+// Check if person already has a spouse
+let hasExistingSpouse = try await checkForExistingSpouse()
+if hasExistingSpouse {
+    print("✅ Person already has a spouse, skipping spouse question")
+    currentStep = .enterSiblings
+    appendSystemMessage("Great! I see you're already married. Do you have any siblings? Enter one sibling's full name and birth year, or leave both blank to skip.")
+} else {
+    currentStep = .enterSpouse
+    appendSystemMessage("Great! Are you married? Enter your spouse's full name and birth year, or leave both blank to skip.")
+}
+
+clearInputs()
+```
+
+═══════════════════════════════════════════════════════════
+  📱 HOW IT WILL WORK
+═══════════════════════════════════════════════════════════
+
+SCENARIO 1: Adding YOUR family
+──────────────────────────────────────
+  1. Add yourself
+  2. Add mother
+  3. Add father
+  4. Wizard asks: "Are you married?" ← Normal flow
+  5. You can add spouse or skip
+
+SCENARIO 2: Later adding FATHER's family
+──────────────────────────────────────
+  1. Restart wizard
+  2. Enter father's name (he already exists in DB)
+  3. Add his mother (your grandmother)
+  4. Add his father (your grandfather)
+  5. Wizard checks: Does father have spouse?
+  6. YES! Father married to mother (from earlier)
+  7. Wizard says: "I see you're already married"
+  8. SKIPS to siblings question ← NEW BEHAVIOR!
+
+═══════════════════════════════════════════════════════════
+  ⚡ ALTERNATIVE: SIMPLER APPROACH
+═══════════════════════════════════════════════════════════
+
+If the above is too complex, you could also:
+
+OPTION A: Just skip manually
+────────────────────────────────────────
+When wizard asks "Are you married?", just leave both 
+fields blank and submit. This skips the spouse question.
+
+OPTION B: Check before starting wizard
+────────────────────────────────────────
+Before restarting wizard for father, check Full Tree:
+  → If father already has spouse listed
+  → You know to skip that question
+
+═══════════════════════════════════════════════════════════
+  🔄 TO RESTORE THE FILE
+═══════════════════════════════════════════════════════════
+
+OPTION 1: Use Xcode Local History
+────────────────────────────────────────
+1. Open Xcode
+2. Right-click CleanPersonFormViewModel.swift file
+3. Show in Finder → Get Info → Versions
+4. Or: Editor → Show Last Change
+
+OPTION 2: Restore from backup file
+────────────────────────────────────────
+Check if there's a .backup file:
+```bash
+find /Users/chakrikotcherlakota/Documents/FamilyTree \\
+  -name "*ViewModel*.backup*" -o -name "*ViewModel*.old"
+```
+
+OPTION 3: I can recreate the entire file
+────────────────────────────────────────
+Let me know and I'll create the complete file with:
+  ✓ All existing functionality
+  ✓ Spouse check feature added
+  ✓ All relationship fixes included
+
+═══════════════════════════════════════════════════════════
+  📋 SUMMARY
+═══════════════════════════════════════════════════════════
+
+WHAT YOU NEED:
+1. Restore CleanPersonFormViewModel.swift
+2. Add checkForExistingSpouse() helper function
+3. Update handleEnterFather to use the check
+4. Test by adding father's family after already having
+   father married to mother
+
+BENEFIT:
+✓ Smarter wizard that remembers existing relationships
+✓ Doesn't ask redundant questions
+✓ Better user experience
+✓ Saves time when adding extended family
+
+═══════════════════════════════════════════════════════════
+
+Would you like me to:
+A) Create the complete CleanPersonFormViewModel.swift file?
+B) Provide detailed restore instructions?
+C) Something else?
+
+Let me know how you'd like to proceed!
+
+═══════════════════════════════════════════════════════════
