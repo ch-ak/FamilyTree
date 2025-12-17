@@ -31,6 +31,11 @@ struct ContentView: View {
                     Label("D3 Tree", systemImage: "chart.bar.doc.horizontal")
                 }
             
+            JustTreeView()
+                .tabItem {
+                    Label("Just Tree", systemImage: "tree")
+                }
+            
             SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gear")
@@ -57,8 +62,8 @@ struct SettingsView: View {
                                     .font(.headline)
                             }
                             
-                            Text(dataSourceManager.isUsingMockData 
-                                ? "Currently using 200 test people (1720-2020)" 
+                            Text(dataSourceManager.isUsingMockData
+                                ? "Currently using 200 test people (1720-2020)"
                                 : "Currently using Supabase database")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)

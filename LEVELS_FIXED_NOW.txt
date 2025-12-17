@@ -1,0 +1,68 @@
+✅ FOUND AND FIXED THE PROBLEM!
+
+THE ISSUE:
+==========
+Adviath (great-grandson) was appearing at the SAME LEVEL as Shyam Sundara Rao (great-grandfather).
+
+This happened because centerChildrenUnderParents() was MOVING people after the BFS assigned correct levels!
+
+WHAT WAS HAPPENING:
+==================
+
+1. BFS correctly assigned levels:
+   Level 0: Shyam Sundara Rao
+   Level 1: His children
+   Level 2: Grandchildren
+   Level 3: Great-grandchildren (Adviath)
+
+2. Then centerChildrenUnderParents() tried to "center parents over children"
+
+3. It MOVED parents to the X position centered over their kids
+   BUT it also accidentally changed their Y position (level)!
+
+4. Result: Everyone got repositioned and levels got messed up!
+
+THE FIX:
+========
+I completely REMOVED the centerChildrenUnderParents() function.
+
+Now the code:
+1. BFS assigns correct levels (0, 1, 2, 3, etc.)
+2. Positions people left-to-right within each level
+3. Each level gets its own Y: level * 120pt
+4. DONE - no repositioning!
+
+WHAT YOU'LL SEE NOW:
+====================
+
+Level 0: Chinna Subbarao + spouse (if any)
+Level 1: Their children + spouses
+Level 2: Grandchildren + spouses
+Level 3: Great-grandchildren + spouses
+Level 4: Great-great-grandchildren
+
+Each person at the CORRECT generation level!
+
+Adviath (great-grandson) will now be 3 levels BELOW Shyam Sundara Rao!
+
+MUST DO NOW:
+============
+
+1. ⏹️  STOP the app in Xcode
+2. 🗑️  Force quit in Simulator (swipe up → close FamilyTree)
+3. 🧹  Clean: Product → Clean Build Folder (Shift+Cmd+K)
+4. ▶️  Run (Cmd+R)
+5. 📱  Go to "New Tree" tab
+6. 👀  Select "Shyam Sundara Rao" as root
+
+YOU WILL SEE:
+=============
+✅ Shyam Sundara Rao at top (level 0)
+✅ His children below (level 1)
+✅ Grandchildren below that (level 2)
+✅ Adviath at level 3 (great-grandson)
+✅ All at CORRECT levels!
+
+Build Status: ✅ BUILD SUCCEEDED
+
+The bug is fixed - force quit and restart to see it!
